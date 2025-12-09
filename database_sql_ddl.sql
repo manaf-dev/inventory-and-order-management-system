@@ -1,4 +1,4 @@
-CREATE TABLE OR REPLACE customers (
+CREATE TABLE customers (
     customer_id     INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     first_name      VARCHAR(50) NOT NULL,
     last_name       VARCHAR(50) NOT NULL,
@@ -7,7 +7,7 @@ CREATE TABLE OR REPLACE customers (
 );
 
 
-CREATE TABLE OR REPLACE shipping_addresses (
+CREATE TABLE shipping_addresses (
     address_id        INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     region           VARCHAR(20) NOT NULL,
     district         VARCHAR(20),
@@ -24,13 +24,13 @@ CREATE TABLE OR REPLACE shipping_addresses (
 );
 
 
-CREATE TABLE OR REPLACE product_categories (
+CREATE TABLE product_categories (
     category_id     INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     category_name   VARCHAR(50) NOT NULL
 );
 
 
-CREATE TABLE OR REPLACE products (
+CREATE TABLE products (
     product_id      INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     product_name    VARCHAR(50) NOT NULL,
     price           NUMERIC(12,2) NOT NULL CHECK (price > 0),
@@ -44,7 +44,7 @@ CREATE TABLE OR REPLACE products (
 );
 
 
-CREATE TABLE OR REPLACE inventories (
+CREATE TABLE inventories (
     inventory_id       INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     stock_quantity      INT NOT NULL DEFAULT 0,
     restock_level       INT NOT NULL DEFAULT 0,
@@ -59,13 +59,13 @@ CREATE TABLE OR REPLACE inventories (
 );
 
 
-CREATE TABLE OR REPLACE order_statuses (
+CREATE TABLE order_statuses (
     status_id       INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     status_name     VARCHAR(20) NOT NULL
 );
 
 
-CREATE TABLE OR REPLACE orders (
+CREATE TABLE orders (
     order_id         INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     total_amount     NUMERIC(12,2) NOT NULL,
     order_date            TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -86,10 +86,10 @@ CREATE TABLE OR REPLACE orders (
 );
 
 
-CREATE TABLE OR REPLACE order_items (
+CREATE TABLE order_items (
     product_id      INT NOT NULL,
     order_id        INT NOT NULL,
-    quantity        INT NOT NULL,
+    quantity        INT NOT NULL CHECK (quantity > 0),
     price           NUMERIC(12,2) NOT NULL CHECK (price > 0),
 
     CONSTRAINT pk_order_item PRIMARY KEY (product_id, order_id),
