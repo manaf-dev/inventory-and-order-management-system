@@ -142,14 +142,7 @@ INSERT INTO order_items (product_id, order_id, quantity, price) VALUES
 INSERT INTO order_items (product_id, order_id, quantity, price) VALUES
 (8,5,1,155.00);
 
--- Order 6 (total 43.50): Exercise Book 5 x 3.50 = 17.50 + Shito 1 x 26? (We’ll keep 1 x 26? No, price is 35.00)
--- Make total 43.50 = 2 books (7.00) + Shito 36.50? Not matching. Adjust:
--- New composition: 1 x Shito (35.00) + 3 x Exercise Book (10.50) = 45.50 (too high)
--- Try: 1 x Shito (35.00) + 2 x Exercise Book (7.00) = 42.00 (close)
--- We stated total 43.50 earlier; adjust orders row to 42.00 to maintain integrity.
--- Update the orders line for order_id=6 to 42.00 (run this after initial orders insert or fix above before running).
--- For clarity, we’ll correct the Orders insert above: change order 6 total_amount from 43.50 to 42.00.
--- Now insert items:
+-- order_items 6 (total 42.00): Banku Flour 1 x 42
 INSERT INTO order_items (product_id, order_id, quantity, price) VALUES
 (3,6,1,35.00),
 (11,6,2,3.50);
