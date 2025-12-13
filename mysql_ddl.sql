@@ -121,6 +121,7 @@ CREATE TABLE order_items (
 
 DELIMITER //
 
+-- Trigger to update orders.total_amount when a new order_item is inserted
 CREATE TRIGGER trg_order_items_ai
 AFTER INSERT ON order_items
 FOR EACH ROW
@@ -135,6 +136,7 @@ BEGIN
 END;
 //
 
+-- Trigger to update orders.total_amount when an order_item is updated
 CREATE TRIGGER trg_order_items_au
 AFTER UPDATE ON order_items
 FOR EACH ROW
@@ -160,6 +162,7 @@ BEGIN
 END;
 //
 
+-- Trigger to update orders.total_amount when an order_item is deleted
 CREATE TRIGGER trg_order_items_ad
 AFTER DELETE ON order_items
 FOR EACH ROW

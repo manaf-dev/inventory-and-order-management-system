@@ -61,7 +61,7 @@ SELECT
   product_id,
   product_name,
   total_sales,
-  DENSE_RANK() OVER (
+  RANK() OVER (
     PARTITION BY category_id ORDER BY total_sales DESC
   ) AS sales_rank
 FROM products_total_sales
@@ -96,98 +96,128 @@ CREATE VIEW CustomerSalesSummary AS
 SELECT * FROM CustomerSalesSummary ORDER BY total_amount_spent DESC;
 
 
+
 -- Stored Procedure: ProcessNewOrder(p_customer_id, p_product_id, p_quantity)
+DROP PROCEDURE IF EXISTS ProcessNewOrder;
+
 DELIMITER //
 
 CREATE PROCEDURE ProcessNewOrder(
   IN p_customer_id INT,
-  IN p_product_id  INT,
-  IN p_quantity    INT
+  IN p_items_json JSON
 )
 BEGIN
-  DECLARE v_current_stock INT;
-  DECLARE v_product_price DECIMAL(12,2);
-  DECLARE v_new_order_id INT;
-  DECLARE v_restock_level INT;
-  DECLARE v_rowcount INT;
-  DECLARE v_status_id INT;
+    DECLARE v_status_id INT;
+    DECLARE v_new_order_id INT;
+    DECLARE v_total_amount DECIMAL(14,2) DEFAULT 0;
+    DECLARE v_item_count INT;
+    DECLARE v_index INT DEFAULT 0;
 
-  -- Basic validation
-  IF p_quantity IS NULL OR p_quantity <= 0 THEN
-	SET @message_text = CONCAT('Quantity must be a positive integer (got ', COALESCE(p_quantity, 'NULL'), ')');
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = @message_text;
-  END IF;
+    DECLARE v_product_id INT;
+    DECLARE v_quantity INT;
+    DECLARE v_price DECIMAL(12,2);
+    DECLARE v_stock INT;
+    DECLARE v_restock_level INT;
+
+    -- Temporary table for restock notices
+    CREATE TEMPORARY TABLE IF NOT EXISTS tmp_restock_notices (
+        product_id INT,
+        current_stock INT,
+        restock_level INT
+    );
+
+    TRUNCATE TABLE tmp_restock_notices;
+
+    -- Validate JSON
+    IF p_items_json IS NULL OR JSON_LENGTH(p_items_json) = 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Order must contain at least one product';
+    END IF;
 
   START TRANSACTION;
 
-  -- Get price and inventory (lock the row)
-  SET v_product_price = NULL;
-  SELECT p.price, i.stock_quantity, i.restock_level
-    INTO v_product_price, v_current_stock, v_restock_level
-  FROM products AS p
-  JOIN inventories AS i ON i.product_id = p.product_id
-  WHERE p.product_id = p_product_id
-  FOR UPDATE;
-
-  IF v_product_price IS NULL THEN
-    ROLLBACK;
-    SET @message_text = CONCAT('Product ', p_product_id, ' not found or no inventory row exists');
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = @message_text;
-  END IF;
-
-  -- Check available stock
-  IF v_current_stock < p_quantity THEN
-    ROLLBACK;
-    SET @message_text = CONCAT('Insufficient stock for product ', p_product_id, ': available ', v_current_stock, ', requested ', p_quantity);
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = @message_text;
-      
-  END IF;
-
-  -- Get 'Processing' status id
-  SET v_status_id = NULL;
-  SELECT status_id INTO v_status_id
+  -- Get Processing status
+  SELECT status_id
+  INTO v_status_id
   FROM order_statuses
   WHERE status_name = 'Processing';
 
-  IF v_status_id IS NULL THEN
-    ROLLBACK;
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Status ''Processing'' not found in order_statuses';
-  END IF;
-
-  -- Insert new order (order_date defaults to CURRENT_TIMESTAMP)
+  -- Create order record (total amount will be calculated by trg_order_items_ai trigger )
   INSERT INTO orders (total_amount, status_id, customer_id)
-  VALUES (v_product_price * p_quantity, v_status_id, p_customer_id);
+  VALUES (0, v_status_id, p_customer_id);
+
   SET v_new_order_id = LAST_INSERT_ID();
 
-  -- Insert order item
-  INSERT INTO order_items (product_id, order_id, quantity, price)
-  VALUES (p_product_id, v_new_order_id, p_quantity, v_product_price);
+  SET v_item_count = JSON_LENGTH(p_items_json);
 
-  -- Decrement stock; WHERE guard prevents oversell under concurrency
-  UPDATE inventories
-     SET stock_quantity = stock_quantity - p_quantity
-   WHERE product_id = p_product_id
-     AND stock_quantity >= p_quantity;
+  WHILE v_index < v_item_count DO
 
-  SET v_rowcount = ROW_COUNT();
-  IF v_rowcount = 0 THEN
-    ROLLBACK;
-    SET @message_text = CONCAT('Insufficient stock for product ', p_product_id, ' during update (concurrent change?)');
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = @message_text;
-  END IF;
+        SET v_product_id = JSON_EXTRACT(p_items_json, CONCAT('$[', v_index, '].product_id'));
+        SET v_quantity   = JSON_EXTRACT(p_items_json, CONCAT('$[', v_index, '].quantity'));
 
-  -- Refresh current stock for optional notice
-  SELECT stock_quantity, restock_level
-    INTO v_current_stock, v_restock_level
-  FROM inventories
-  WHERE product_id = p_product_id;
+        IF v_quantity IS NULL OR v_quantity <= 0 THEN
+            ROLLBACK;
+            SET @messate_text = CONCAT('Invalid quantity for product ', v_product_id);
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = @messate_text;
+        END IF;
+
+        -- Lock inventory
+        SELECT p.price, i.stock_quantity, i.restock_level
+        INTO v_price, v_stock, v_restock_level
+        FROM products p
+        JOIN inventories i ON i.product_id = p.product_id
+        WHERE p.product_id = v_product_id
+        FOR UPDATE;
+
+        IF v_price IS NULL THEN
+            ROLLBACK;
+            SET @messate_text = CONCAT('Product ', v_product_id, ' not found');
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = @messate_text;
+        END IF;
+
+        IF v_stock < v_quantity THEN
+            ROLLBACK;
+            SET @messate_text = CONCAT(
+                'Insufficient stock for product ', v_product_id,
+                ' (available ', v_stock, ', requested ', v_quantity, ')'
+            );
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = @messate_text;
+        END IF;
+
+        -- Insert item
+        INSERT INTO order_items (product_id, order_id, quantity, price)
+        VALUES (v_product_id, v_new_order_id, v_quantity, v_price);
+
+        -- Update inventory
+        UPDATE inventories
+        SET stock_quantity = stock_quantity - v_quantity
+        WHERE product_id = v_product_id;
+
+        -- Re-read stock after update
+        SELECT stock_quantity
+        INTO v_stock
+        FROM inventories
+        WHERE product_id = v_product_id;
+
+        -- Collect restock notice
+        IF v_stock <= v_restock_level THEN
+            INSERT INTO tmp_restock_notices
+            VALUES (v_product_id, v_stock, v_restock_level);
+        END IF;
+
+        SET v_total_amount = v_total_amount + (v_price * v_quantity);
+        SET v_index = v_index + 1;
+    END WHILE;
 
   COMMIT;
 
-  -- return a message row when restock is needed
-  IF v_current_stock <= v_restock_level THEN
-    SELECT CONCAT('Product ', p_product_id, ' needs restock (current: ', v_current_stock,
-                  ', restock level: ', v_restock_level, ')') AS message;
+  -- Return restock notices (if any)
+  IF EXISTS (SELECT * FROM tmp_restock_notices) THEN
+    SELECT CONCAT('Product ', p.product_id, ' needs restock (current: ', v_stock,
+                  ', restock level: ', v_restock_level, ')') AS restock_notice;
   END IF;
 END//
 DELIMITER ;
@@ -202,14 +232,20 @@ FROM inventories i
 JOIN products p ON p.product_id = i.product_id
 WHERE i.product_id = 3;
 
--- 2) Place the order
-CALL ProcessNewOrder(3, 3, 2);
+-- 2) Place the order with multiple products
+CALL ProcessNewOrder(
+  3,
+  '[
+     {"product_id": 1, "quantity": 2},
+     {"product_id": 4, "quantity": 1},
+     {"product_id": 7, "quantity": 3}
+   ]'
+);
 
--- 3) Verify: last created order (with date/time)
-SELECT o.order_id, o.customer_id, o.total_amount, o.status_id, o.order_date
-FROM orders o
-ORDER BY o.order_id DESC
-LIMIT 1;
+-- 3) Verify: last created order (with order_id and date/time)
+SELECT *
+FROM orders
+ORDER BY order_id DESC;
 
 -- 4) Check inventory after (stock should drop by 2)
 SELECT i.product_id, p.product_name, i.stock_quantity, i.restock_level
@@ -218,6 +254,11 @@ JOIN products p ON p.product_id = i.product_id
 WHERE i.product_id = 3;
 
 -- Handling exceptions (these will SIGNAL errors)
-CALL ProcessNewOrder(2, 10, 0);      -- quantity <= 0
-CALL ProcessNewOrder(2, 999, 1);     -- nonexistent product/inventory
-CALL ProcessNewOrder(4, 5, 9999);    -- insufficient stock
+-- quantity <= 0
+CALL ProcessNewOrder(2, '[{"product_id": 10, "quantity": 0}]');
+
+-- nonexistent product/inventory
+CALL ProcessNewOrder(2, '[{"product_id": 999, "quantity": 1}]');
+
+-- insufficient stock
+CALL ProcessNewOrder(2, '[{"product_id": 5, "quantity": 9999}]');
